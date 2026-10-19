@@ -1,0 +1,12 @@
+{
+  "name": "cooldown-lens-fixture",
+  "private": true,
+  "dependencies": {
+    "fresh-lib": "^1.0.0",
+    "old-lib": "^2.0.0",
+    "local-thing": "file:../local-thing"
+  },
+  "devDependencies": {
+    "@scope/pinned": "0.5.0"
+  }
+}

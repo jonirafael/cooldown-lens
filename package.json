@@ -1,0 +1,234 @@
+{
+  "name": "cooldown-lens",
+  "displayName": "Cooldown Lens \u2013 npm Package Age & Minimum Release Age",
+  "description": "See how old every npm dependency version is, right inside package.json. Flags versions still inside your supply-chain cooldown (npm min-release-age, pnpm minimumReleaseAge, Yarn npmMinimalAgeGate, Bun minimumReleaseAge) and suggests the newest safe version.",
+  "version": "0.1.0",
+  "publisher": "jonirafael",
+  "license": "MIT",
+  "author": {
+    "name": "jonirafael"
+  },
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "homepage": "https://github.com/jonirafael/cooldown-lens#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jonirafael/cooldown-lens.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jonirafael/cooldown-lens/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Linters",
+    "Other"
+  ],
+  "keywords": [
+    "npm",
+    "npm security",
+    "supply chain",
+    "supply chain security",
+    "package age",
+    "cooldown",
+    "dependency cooldown",
+    "minimum release age",
+    "min-release-age",
+    "minimumReleaseAge",
+    "npmMinimalAgeGate",
+    "pnpm",
+    "yarn",
+    "bun",
+    "package.json",
+    "dependencies",
+    "malware",
+    "version lens"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/package.json",
+    "onLanguage:json"
+  ],
+  "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In untrusted workspaces Cooldown Lens ignores registry URLs declared in project files and only talks to the registry configured in your user settings (default: registry.npmjs.org)."
+    },
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Cooldown configuration files are only discovered on the local file system."
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "cooldownLens.refresh",
+        "title": "Refresh (re-fetch registry data)",
+        "category": "Cooldown Lens"
+      },
+      {
+        "command": "cooldownLens.clearCache",
+        "title": "Clear Registry Cache",
+        "category": "Cooldown Lens"
+      },
+      {
+        "command": "cooldownLens.toggle",
+        "title": "Toggle Inline Package Ages",
+        "category": "Cooldown Lens"
+      },
+      {
+        "command": "cooldownLens.showPolicy",
+        "title": "Show Effective Cooldown Policy",
+        "category": "Cooldown Lens"
+      }
+    ],
+    "configuration": {
+      "title": "Cooldown Lens",
+      "properties": {
+        "cooldownLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Cooldown Lens for package.json files."
+        },
+        "cooldownLens.defaultCooldownDays": {
+          "type": "number",
+          "default": 7,
+          "minimum": 0,
+          "description": "Cooldown (in days) used when the project has no package-manager cooldown configuration (.npmrc min-release-age, pnpm minimumReleaseAge, bunfig.toml install.minimumReleaseAge, .yarnrc.yml npmMinimalAgeGate)."
+        },
+        "cooldownLens.thresholdSource": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "setting"
+          ],
+          "enumDescriptions": [
+            "Read the cooldown from the project's package-manager configuration, falling back to cooldownLens.defaultCooldownDays.",
+            "Always use cooldownLens.defaultCooldownDays and ignore project configuration."
+          ],
+          "default": "auto",
+          "description": "Where the cooldown threshold comes from."
+        },
+        "cooldownLens.registry": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Registry base URL (for example `https://registry.npmjs.org/` or an internal mirror). Empty = auto-detect from the project's `.npmrc` / `.yarnrc.yml` / `bunfig.toml` (trusted workspaces only), otherwise `https://registry.npmjs.org/`. The registry must return the `time` field in package metadata."
+        },
+        "cooldownLens.allowInsecureHosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "localhost",
+            "127.0.0.1"
+          ],
+          "description": "Hosts that may be contacted over plain http (e.g. a local Verdaccio). All other registries must use https."
+        },
+        "cooldownLens.offline": {
+          "type": "boolean",
+          "default": false,
+          "description": "Never contact the registry; only use cached metadata (useful on planes, air-gapped machines or when the registry is unreachable)."
+        },
+        "cooldownLens.cacheTtlMinutes": {
+          "type": "number",
+          "default": 60,
+          "minimum": 0,
+          "description": "How long fetched registry metadata stays fresh before it is fetched again."
+        },
+        "cooldownLens.maxConcurrentRequests": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 32,
+          "description": "Maximum number of registry requests in flight at the same time."
+        },
+        "cooldownLens.requestTimeoutSeconds": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Timeout for a single registry request."
+        },
+        "cooldownLens.dependencyTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "dependencies",
+              "devDependencies",
+              "peerDependencies",
+              "optionalDependencies"
+            ]
+          },
+          "default": [
+            "dependencies",
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies"
+          ],
+          "description": "Which dependency sections to analyse."
+        },
+        "cooldownLens.inlineAges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the release age as inline text after each dependency."
+        },
+        "cooldownLens.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a summary CodeLens above each dependency section."
+        },
+        "cooldownLens.diagnosticSeverity": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warning",
+            "information",
+            "hint"
+          ],
+          "default": "warning",
+          "description": "Severity used for versions that are still inside the cooldown window."
+        },
+        "cooldownLens.excludePackages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra package names or glob patterns (e.g. @myorg/*) that are exempt from the cooldown, in addition to excludes declared in package-manager config."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:integration": "node esbuild.mjs && node scripts/build-integration.mjs && node out/integration/runTest.js",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^20.19.0",
+    "@types/semver": "^7.7.0",
+    "@types/vscode": "~1.90.0",
+    "@vscode/test-electron": "^3.1.0",
+    "esbuild": "^0.25.0",
+    "mocha": "^11.7.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1",
+    "semver": "^7.7.2",
+    "smol-toml": "^1.4.0",
+    "yaml": "^2.8.0"
+  },
+  "pricing": "Free"
+}
