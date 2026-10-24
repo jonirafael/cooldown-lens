@@ -18,6 +18,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: npm run build:cli
+      - run: node cli/dist/cli.js --prod --no-fail   # dogfood: report fresh deps of this repo
+      - run: cd cli && npm pack --dry-run
       - run: xvfb-run -a npm run test:integration
       - run: npx --yes @vscode/vsce@3 package --no-dependencies
       - uses: actions/upload-artifact@v4

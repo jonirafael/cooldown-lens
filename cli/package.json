@@ -1,0 +1,54 @@
+{
+  "name": "cooldown-check",
+  "version": "0.1.0",
+  "description": "Fail CI when npm or PyPI dependencies are younger than your supply-chain cooldown (npm min-release-age, pnpm minimumReleaseAge, Yarn npmMinimalAgeGate, Bun minimumReleaseAge, uv exclude-newer). Checks package.json + lockfiles, requirements.txt and pyproject.toml.",
+  "keywords": [
+    "supply chain",
+    "supply-chain-security",
+    "cooldown",
+    "dependency cooldown",
+    "dependency age",
+    "package age",
+    "min-release-age",
+    "minimumReleaseAge",
+    "npmMinimalAgeGate",
+    "exclude-newer",
+    "npm",
+    "pnpm",
+    "yarn",
+    "bun",
+    "pypi",
+    "python",
+    "lockfile",
+    "ci",
+    "security",
+    "malware"
+  ],
+  "license": "MIT",
+  "author": "jonirafael",
+  "homepage": "https://github.com/jonirafael/cooldown-lens/tree/main/cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jonirafael/cooldown-lens.git",
+    "directory": "cli"
+  },
+  "bugs": {
+    "url": "https://github.com/jonirafael/cooldown-lens/issues"
+  },
+  "bin": {
+    "cooldown-check": "dist/cli.js"
+  },
+  "main": "dist/cli.js",
+  "files": [
+    "dist/cli.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "prepack": "node build.mjs"
+  }
+}

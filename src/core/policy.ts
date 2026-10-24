@@ -89,3 +89,44 @@ export function resolvePolicy(input: PolicyInput): CooldownPolicy {
     notes,
   };
 }
+
+export interface PythonPolicyInput {
+  /** uv exclude-newer found in project files. */
+  project?: { thresholdMs: number; origin: string; file: string };
+  projectExcludes: ExcludeRule[];
+  projectWarnings: string[];
+  thresholdSource: "auto" | "setting";
+  /** cooldownLens.python.minimumReleaseAgeDays (null/undefined = use defaultDays). */
+  pythonDays?: number | null;
+  defaultDays: number;
+  extraExcludes: string[];
+}
+
+/** Python counterpart of resolvePolicy(): uv exclude-newer > python setting > default setting. */
+export function resolvePythonPolicy(input: PythonPolicyInput): CooldownPolicy {
+  const extra = input.extraExcludes
+    .map((e) => parseExcludeEntry(e, "cooldownLens.excludePackages"))
+    .filter((r): r is ExcludeRule => !!r)
+    .map((r) => ({ ...r, name: r.name.toLowerCase().replace(/[-_.]+/g, "-") }));
+  const notes = [...input.projectWarnings];
+  const hasPySetting = typeof input.pythonDays === "number" && input.pythonDays >= 0;
+  const fallback = (why: string): CooldownPolicy => ({
+    thresholdMs: Math.max(0, hasPySetting ? input.pythonDays! : input.defaultDays) * DAY,
+    kind: "setting",
+    origin: hasPySetting
+      ? `cooldownLens.python.minimumReleaseAgeDays = ${input.pythonDays} (${why})`
+      : `cooldownLens.defaultCooldownDays = ${input.defaultDays} (${why})`,
+    excludes: extra,
+    notes,
+  });
+  if (input.thresholdSource === "setting") return fallback("thresholdSource = setting");
+  if (!input.project) return fallback("no uv exclude-newer configured");
+  return {
+    thresholdMs: input.project.thresholdMs,
+    kind: "project",
+    origin: input.project.origin,
+    file: input.project.file,
+    excludes: [...input.projectExcludes, ...extra],
+    notes,
+  };
+}

@@ -11,5 +11,5 @@
     "rootDir": ".",
     "outDir": "out"
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "cli/src", "cli/test"]
 }

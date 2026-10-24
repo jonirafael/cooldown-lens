@@ -1,8 +1,8 @@
 {
   "name": "cooldown-lens",
-  "displayName": "Cooldown Lens \u2013 npm Package Age & Minimum Release Age",
-  "description": "See how old every npm dependency version is, right inside package.json. Flags versions still inside your supply-chain cooldown (npm min-release-age, pnpm minimumReleaseAge, Yarn npmMinimalAgeGate, Bun minimumReleaseAge) and suggests the newest safe version.",
-  "version": "0.1.0",
+  "displayName": "Cooldown Lens – npm Package Age & Minimum Release Age",
+  "description": "See how old every npm and Python (PyPI) dependency version is, right inside package.json, requirements.txt and pyproject.toml. Flags versions still inside your supply-chain cooldown (npm min-release-age, pnpm minimumReleaseAge, Yarn npmMinimalAgeGate, Bun minimumReleaseAge, uv exclude-newer) and suggests the newest safe version.",
+  "version": "0.2.0",
   "publisher": "jonirafael",
   "license": "MIT",
   "author": {
@@ -46,11 +46,24 @@
     "package.json",
     "dependencies",
     "malware",
-    "version lens"
+    "version lens",
+    "python",
+    "pypi",
+    "pip",
+    "requirements.txt",
+    "pyproject.toml",
+    "uv",
+    "exclude-newer",
+    "poetry",
+    "dependency age"
   ],
   "activationEvents": [
     "workspaceContains:**/package.json",
-    "onLanguage:json"
+    "workspaceContains:**/requirements*.txt",
+    "workspaceContains:**/pyproject.toml",
+    "onLanguage:json",
+    "onLanguage:pip-requirements",
+    "onLanguage:toml"
   ],
   "main": "./dist/extension.js",
   "capabilities": {
@@ -65,6 +78,11 @@
   },
   "contributes": {
     "commands": [
+      {
+        "command": "cooldownLens.checkAll",
+        "title": "Check All Dependencies",
+        "category": "Cooldown Lens"
+      },
       {
         "command": "cooldownLens.refresh",
         "title": "Refresh (re-fetch registry data)",
@@ -200,6 +218,31 @@
           },
           "default": [],
           "description": "Extra package names or glob patterns (e.g. @myorg/*) that are exempt from the cooldown, in addition to excludes declared in package-manager config."
+        },
+        "cooldownLens.python.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check Python dependencies in requirements*.txt, constraints*.txt, requirements/*.txt and pyproject.toml (PEP 621, PEP 735 dependency groups, Poetry) against PyPI release dates."
+        },
+        "cooldownLens.python.minimumReleaseAgeDays": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "description": "Cooldown in days for Python packages when no uv `exclude-newer` is configured in uv.toml / pyproject.toml. Leave empty (null) to use `cooldownLens.defaultCooldownDays`."
+        },
+        "cooldownLens.python.index": {
+          "type": "string",
+          "default": "https://pypi.org/",
+          "description": "Base URL of a PyPI-compatible index that serves the JSON API (`<index>/pypi/<name>/json`). Must be https (http only for hosts in `cooldownLens.allowInsecureHosts`)."
+        },
+        "cooldownLens.checkAll.maxFiles": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "Maximum number of manifest files scanned by \"Cooldown Lens: Check All Dependencies\"."
         }
       }
     }
@@ -211,7 +254,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "node esbuild.mjs && node scripts/build-integration.mjs && node out/integration/runTest.js",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies",
+    "build:cli": "node cli/build.mjs"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",

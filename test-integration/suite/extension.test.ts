@@ -25,6 +25,14 @@ const PACKUMENTS: Record<string, unknown> = {
   },
 };
 
+const PYPI: Record<string, unknown> = {
+  requests: {
+    info: { version: "2.32.0" },
+    releases: { "2.31.0": [{ upload_time_iso_8601: iso(500) }], "2.32.0": [{ upload_time_iso_8601: iso(2) }] },
+  },
+  flask: { info: { version: "3.0.0" }, releases: { "3.0.0": [{ upload_time_iso_8601: iso(300) }] } },
+};
+
 async function waitFor<T>(fn: () => T | undefined, ms = 30_000): Promise<T> {
   const start = Date.now();
   for (;;) {
@@ -43,7 +51,8 @@ describe("Cooldown Lens (VS Code integration)", () => {
     server = http.createServer((req, res) => {
       const name = decodeURIComponent((req.url ?? "/").slice(1));
       requests.push(`${name} auth=${req.headers.authorization ?? "none"}`);
-      const body = PACKUMENTS[name];
+      const py = /^pypi\/([^/]+)\/json$/.exec(name);
+      const body = py ? PYPI[py[1]] : PACKUMENTS[name];
       res.writeHead(body ? 200 : 404, { "content-type": "application/json" });
       res.end(JSON.stringify(body ?? { error: "not found" }));
     });
@@ -102,5 +111,39 @@ describe("Cooldown Lens (VS Code integration)", () => {
 
     // revert edit so the fixture stays clean
     await vscode.commands.executeCommand("workbench.action.files.revert");
+  });
+
+  it("checks requirements.txt against PyPI with the Python cooldown", async () => {
+    const folder = vscode.workspace.workspaceFolders![0].uri.fsPath;
+    const uri = vscode.Uri.file(path.join(folder, "requirements.txt"));
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(doc);
+    const diags = await waitFor(() => {
+      const d = vscode.languages.getDiagnostics(uri).filter((x) => x.source === "Cooldown Lens");
+      return d.length >= 1 ? d : undefined;
+    });
+    await new Promise((r) => setTimeout(r, 1000));
+    const all = vscode.languages.getDiagnostics(uri).filter((x) => x.source === "Cooldown Lens");
+    assert.strictEqual(all.length, 1, all.map((d) => d.message).join("\n"));
+    assert.match(diags[0].message, /requests==2\.32\.0/);
+    assert.match(diags[0].message, /cooldown of 5 days/);
+    const actions = await vscode.commands.executeCommand<vscode.CodeAction[]>("vscode.executeCodeActionProvider", uri, diags[0].range);
+    const fix = actions.find((a) => a.title.startsWith("Pin requests to ==2.31.0"));
+    assert.ok(fix, actions.map((a) => a.title).join(" | "));
+    await vscode.workspace.applyEdit(fix!.edit!);
+    assert.match(doc.getText(), /^requests==2\.31\.0$/m);
+    await waitFor(() => (vscode.languages.getDiagnostics(uri).filter((x) => x.source === "Cooldown Lens").length === 0 ? true : undefined));
+    await vscode.commands.executeCommand("workbench.action.files.revert");
+    assert.ok(requests.some((r) => r.startsWith("pypi/requests/json")));
+  });
+
+  it("Check All Dependencies summarises the workspace", async () => {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    const summary = await vscode.commands.executeCommand<{ files: number; checked: number; tooYoung: Array<{ name: string }> }>("cooldownLens.checkAll");
+    assert.ok(summary, "checkAll returned nothing");
+    assert.strictEqual(summary.files, 2);
+    const names = summary.tooYoung.map((t) => t.name).sort();
+    assert.deepStrictEqual(names, ["@scope/pinned", "fresh-lib", "requests"]);
+    assert.ok(requests.every((r) => r.endsWith("auth=none")));
   });
 });

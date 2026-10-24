@@ -1,10 +1,14 @@
-# Cooldown Lens — npm package age & minimum release age for VS Code
+# Cooldown Lens — npm & PyPI package age and minimum release age for VS Code
 
-**See how old every dependency version in your `package.json` is, and catch versions that are still inside your
-supply-chain cooldown before you install them.** Cooldown Lens reads the cooldown you already configured for npm
-(`min-release-age`), pnpm (`minimumReleaseAge`), Yarn (`npmMinimalAgeGate`) or Bun (`minimumReleaseAge`), shows the
-release age inline, raises a warning for every version that is too fresh, and offers a one-click quick fix to the newest
-version that passes the cooldown.
+**See how old every dependency version in your `package.json`, `requirements.txt` or `pyproject.toml` is, and catch
+versions that are still inside your supply-chain cooldown before you install them.** Cooldown Lens reads the cooldown you
+already configured for npm (`min-release-age`), pnpm (`minimumReleaseAge`), Yarn (`npmMinimalAgeGate`), Bun
+(`minimumReleaseAge`) or uv (`exclude-newer`), shows the release age inline, raises a warning for every version that is
+too fresh, and offers a one-click quick fix to the newest version that passes the cooldown.
+
+**New in 0.2.0:** Python / PyPI support (pip requirements files, PEP 621 / PEP 735 / Poetry `pyproject.toml`, uv
+`exclude-newer`) and a **Cooldown Lens: Check All Dependencies** command that scans the whole workspace. Want the same
+check in CI? Use the companion CLI: [`npx cooldown-check`](cli/README.md).
 
 ![Cooldown Lens: inline package ages, cooldown warnings, hover and quick fix](images/demo.gif)
 
@@ -24,7 +28,15 @@ version that passes the cooldown.
   version in the range is old enough — move the range to the newest older safe version.
 - **Hover** with resolved/installed version, publish date (UTC), age, latest version, newest safe version, and whether the
   package is exempt.
-- **CodeLens** summary above each dependency section and a compact **status bar** item (`🛡 7d ⚠ 3`).
+- **CodeLens** summary above each dependency section and a compact **status bar** item (`🛡 7d ⚠ 3`); with no manifest
+  open it shows the workspace-wide count from the last **Check All Dependencies** run.
+- **Check All Dependencies** command: scans every `package.json`, `requirements*.txt`, `constraints*.txt` and
+  `pyproject.toml` in the workspace (skipping `node_modules`, virtualenvs, `.tox`…), writes a report to the *Cooldown
+  Lens* output channel and lets you jump to each too-young dependency.
+- **Python / PyPI**: `requirements*.txt` (environment markers, extras, line continuations; option lines such as `-r`/`-c`/`--index-url`, editable,
+  URL and local entries are skipped), `pyproject.toml` `[project.dependencies]`, `[project.optional-dependencies]`,
+  `[dependency-groups]` and `[tool.poetry.*dependencies]`. Publish dates come from the PyPI JSON API (earliest file
+  upload per release); yanked releases are never suggested. Versions are compared with PEP 440 rules.
 - **Reads your real cooldown configuration** (see below) — no second source of truth. Falls back to a setting
   (default **7 days**).
 - **Honours exclusions**: `min-release-age-exclude`, `minimumReleaseAgeExclude`, `minimumReleaseAgeExcludes`,
@@ -91,6 +103,20 @@ Resolution rules:
 A `pnpm.minimumReleaseAge` field in `package.json` is also read as a low-priority legacy location; current pnpm docs only
 document `pnpm-workspace.yaml`. Only project files are read — user-level files such as `~/.npmrc` are not.
 
+### Python
+
+1. A uv cooldown in the nearest `uv.toml` or `pyproject.toml` `[tool.uv]` (up to the workspace folder):
+   `exclude-newer = "7 days"` (friendly or ISO 8601 durations such as `P7D`, or an absolute date/timestamp, which is
+   converted to a cooldown). `exclude-newer-package = { pkg = false }` exempts a package.
+2. Otherwise `cooldownLens.python.minimumReleaseAgeDays`, if set.
+3. Otherwise `cooldownLens.defaultCooldownDays`.
+
+```toml
+# pyproject.toml
+[tool.uv]
+exclude-newer = "3 days"
+```
+
 Run **Cooldown Lens: Show Effective Cooldown Policy** to see the threshold, its source, the registry and excludes.
 
 ## Settings
@@ -111,8 +137,13 @@ Run **Cooldown Lens: Show Effective Cooldown Policy** to see the threshold, its 
 | `cooldownLens.codeLens` | `true` | Section summary CodeLens. |
 | `cooldownLens.diagnosticSeverity` | `warning` | `error`, `warning`, `information` or `hint`. |
 | `cooldownLens.excludePackages` | `[]` | Extra names/globs exempt from the cooldown (e.g. `@myorg/*`). |
+| `cooldownLens.python.enabled` | `true` | Analyse `requirements*.txt`, `constraints*.txt` and `pyproject.toml`. |
+| `cooldownLens.python.minimumReleaseAgeDays` | `null` | Python cooldown when no uv `exclude-newer` is configured (null = `defaultCooldownDays`). |
+| `cooldownLens.python.index` | `https://pypi.org/` | Index exposing the PyPI JSON API (`<index>/pypi/<name>/json`). |
+| `cooldownLens.checkAll.maxFiles` | `200` | Maximum manifests scanned by **Check All Dependencies**. |
 
-Commands: **Refresh**, **Clear Registry Cache**, **Toggle Inline Package Ages**, **Show Effective Cooldown Policy**.
+Commands: **Check All Dependencies**, **Refresh**, **Clear Registry Cache**, **Toggle Inline Package Ages**, **Show
+Effective Cooldown Policy**.
 
 ## Private registries, mirrors and offline use
 
@@ -141,11 +172,15 @@ dependencies). Cooldown Lens is the visibility layer for direct dependencies in 
 **Why pin instead of keeping `^`?** A cooldown-unaware install of `^1.2.0` would still pick the fresh `1.3.0`. A pin is the
 only edit that changes the result for everyone; once the cooldown has passed, widen it again.
 
-**What about transitive dependencies / lockfiles?** Not yet — see the roadmap.
+**What about transitive dependencies / lockfiles?** The editor shows direct dependencies. For lockfile-exact and
+transitive checks in CI use [`cooldown-check`](cli/README.md) (`npx cooldown-check --all`), which reads
+`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `uv.lock` and `poetry.lock`.
+
+**Does Python support need Python installed?** No. Everything is parsed in the extension and dates come from PyPI.
 
 ## Roadmap
 
-- Lockfile awareness (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`) and transitive warnings.
+- Lockfile versions inside the editor (already available in the CLI).
 - pnpm `catalog:` entries in `pnpm-workspace.yaml`.
 - Optional auth via VS Code SecretStorage for private registries.
 
@@ -156,6 +191,7 @@ npm install --min-release-age=7   # practice what we preach
 npm test                          # unit tests (vitest): config parsers, version selection, registry client
 npm run test:integration          # launches VS Code with a fake local registry (needs a display, e.g. xvfb-run)
 npm run build                     # esbuild bundle -> dist/extension.js
+npm run build:cli                 # esbuild bundle -> cli/dist/cli.js (the cooldown-check CLI)
 npx @vscode/vsce package          # -> cooldown-lens-<version>.vsix
 ```
 

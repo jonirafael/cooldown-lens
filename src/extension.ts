@@ -8,13 +8,36 @@ import { checkRegistryUrl, DEFAULT_REGISTRY, registryFor, RegistryChoice } from 
 import { parseSpec, ParsedSpec, pinSpec, rewriteSpec } from "./core/spec";
 import { discoverProject, findInstalledVersion, WATCHED_FILES } from "./discovery";
 import { DependencyEntry, extractDependencies, SectionInfo } from "./documentModel";
-import { RegistryClient, RegistryError } from "./registryClient";
+import { Ecosystem, RegistryClient, RegistryError } from "./registryClient";
+import { analyzePython, isPythonManifestPath, parsePyproject, parseRequirementsTxt, PythonDependency, pythonPinSpec } from "./core/python";
+import { resolvePythonPolicy } from "./core/policy";
+import { discoverPythonProject, PYTHON_WATCHED_FILES } from "./discovery";
 
 const SOURCE = "Cooldown Lens";
+
+interface WorkspaceSummary {
+  files: number;
+  checked: number;
+  errors: number;
+  tooYoung: {
+    uri: vscode.Uri;
+    file: string;
+    ecosystem: Ecosystem;
+    name: string;
+    version: string;
+    ageMs?: number;
+    thresholdMs: number;
+    suggestion?: string;
+    offset: number;
+  }[];
+}
 const DIAG_CODE = "cooldown";
 
 interface EntryResult {
+  ecosystem: Ecosystem;
   entry: DependencyEntry;
+  /** Python requirement details (ecosystem "pypi" only). */
+  py?: PythonDependency;
   spec: ParsedSpec;
   registry?: string;
   analysis?: Analysis;
@@ -47,6 +70,20 @@ function isPackageJson(doc: vscode.TextDocument): boolean {
   return doc.uri.scheme === "file" && path.basename(doc.uri.fsPath) === "package.json" && !doc.uri.fsPath.includes(`${path.sep}node_modules${path.sep}`);
 }
 
+function isPythonManifest(doc: vscode.TextDocument): boolean {
+  return doc.uri.scheme === "file" && isPythonManifestPath(doc.uri.fsPath);
+}
+
+function isManifest(doc: vscode.TextDocument): boolean {
+  if (isPackageJson(doc)) return true;
+  return isPythonManifest(doc) && cfg().get<boolean>("python.enabled", true);
+}
+
+/** "name@1.2.3" for npm, "name==1.2.3" for Python. */
+function pkgAt(r: EntryResult, version?: string): string {
+  return r.ecosystem === "pypi" ? `${r.entry.name}==${version}` : `${r.spec.registryName}@${version}`;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Cooldown Lens");
   log(`activated (VS Code ${vscode.version})`);
@@ -61,6 +98,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const diagnostics = vscode.languages.createDiagnosticCollection("cooldown-lens");
   const results = new Map<string, DocResult>();
+  let workspaceSummary: WorkspaceSummary | undefined;
   const timers = new Map<string, NodeJS.Timeout>();
   const runs = new Map<string, number>();
   let inlineEnabled = cfg().get<boolean>("inlineAges", true);
@@ -83,12 +121,13 @@ export function activate(context: vscode.ExtensionContext): void {
   // ------------------------------------------------------------------ analysis
 
   async function analyse(doc: vscode.TextDocument, force = false): Promise<void> {
-    if (!cfg().get<boolean>("enabled", true) || !isPackageJson(doc)) return;
+    if (!cfg().get<boolean>("enabled", true) || !isManifest(doc)) return;
     log(`analysing ${doc.uri.fsPath}`);
     const key = doc.uri.toString();
     const run = (runs.get(key) ?? 0) + 1;
     runs.set(key, run);
     const stale = () => runs.get(key) !== run;
+    if (!isPackageJson(doc)) return analysePython(doc, force, key, stale);
 
     const pkgDir = path.dirname(doc.uri.fsPath);
     const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
@@ -131,7 +170,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const docResult: DocResult = { version: doc.version, policy, registry, registryNotes, results: [], sections, done: false };
     const now = Date.now();
 
-    docResult.results = entries.map((entry) => ({ entry, spec: parseSpec(entry.name, entry.spec) }));
+    docResult.results = entries.map((entry) => ({ ecosystem: "npm" as const, entry, spec: parseSpec(entry.name, entry.spec) }));
     results.set(key, docResult);
     render(doc);
 
@@ -166,8 +205,85 @@ export function activate(context: vscode.ExtensionContext): void {
     render(doc);
   }
 
+  async function analysePython(doc: vscode.TextDocument, force: boolean, key: string, stale: () => boolean): Promise<void> {
+    const dir = path.dirname(doc.uri.fsPath);
+    const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
+    const project = await discoverPythonProject(dir, folder?.uri.fsPath);
+    const policy = resolvePythonPolicy({
+      project: project.setting,
+      projectExcludes: project.excludes,
+      projectWarnings: project.warnings,
+      thresholdSource: cfg().get<"auto" | "setting">("thresholdSource", "auto"),
+      pythonDays: cfg().get<number | null>("python.minimumReleaseAgeDays", null),
+      defaultDays: cfg().get<number>("defaultCooldownDays", 7),
+      extraExcludes: cfg().get<string[]>("excludePackages", []),
+    });
+    const allowInsecure = cfg().get<string[]>("allowInsecureHosts", ["localhost", "127.0.0.1"]);
+    const registryNotes: string[] = [];
+    let base = "https://pypi.org/";
+    const configured = cfg().get<string>("python.index", "");
+    if (configured) {
+      const c = checkRegistryUrl(configured, allowInsecure);
+      if (c.ok) base = c.url.toString();
+      else registryNotes.push(`Ignored configured Python index: ${c.reason}`);
+    }
+    const registry: RegistryChoice = { base, scoped: {} };
+    const text = doc.getText();
+    const parsed = path.basename(doc.uri.fsPath) === "pyproject.toml" ? parsePyproject(text) : parseRequirementsTxt(text);
+    if ("warnings" in parsed) policy.notes.push(...parsed.warnings);
+    const sections: SectionInfo[] = [];
+    const entries: EntryResult[] = parsed.deps.map((d) => {
+      const entry: DependencyEntry = {
+        section: d.section,
+        name: d.name,
+        spec: d.spec,
+        keyOffset: d.nameOffset,
+        keyLength: d.nameLength,
+        valueOffset: d.specLength ? d.specOffset : d.nameOffset,
+        valueLength: d.specLength ? d.specLength : d.nameLength,
+        lineEndOffset: d.lineEndOffset,
+      };
+      if (!sections.some((s) => s.section === d.section)) {
+        sections.push({ section: d.section, keyOffset: doc.offsetAt(doc.positionAt(d.nameOffset).with({ character: 0 })) });
+      }
+      const spec: ParsedSpec = d.unsupported
+        ? { kind: "unsupported", registryName: d.normalized, value: d.spec, reason: d.unsupported }
+        : { kind: "range", registryName: d.normalized, value: d.spec };
+      return { ecosystem: "pypi" as const, entry, py: d, spec };
+    });
+    const docResult: DocResult = { version: doc.version, policy, registry, registryNotes, results: entries, sections, done: false };
+    results.set(key, docResult);
+    render(doc);
+    const now = Date.now();
+    let lastRender = Date.now();
+    await Promise.all(
+      entries.map(async (r) => {
+        if (r.spec.kind === "unsupported" || !r.py?.specifiers) return;
+        r.registry = base;
+        try {
+          const { data, fromCache } = await client.get(base, r.py.name, force, "pypi");
+          if (stale()) return;
+          r.fromCache = fromCache;
+          r.analysis = analyzePython(r.py.specifiers, data, policy.thresholdMs, now);
+          r.excludedBy = findExclusion(policy.excludes, r.py.normalized, r.analysis.target);
+        } catch (e) {
+          r.error = e instanceof RegistryError ? e.message : `unexpected error: ${(e as Error).message}`;
+          if (!(e instanceof RegistryError && e.kind === "offline")) log(r.error);
+        }
+        if (!stale() && Date.now() - lastRender > 400) {
+          lastRender = Date.now();
+          render(doc);
+        }
+      }),
+    );
+    if (stale()) return;
+    docResult.done = true;
+    log(`done ${doc.uri.fsPath}: ${entries.filter(isWarning).length} warning(s), policy ${policy.origin}`);
+    render(doc);
+  }
+
   function schedule(doc: vscode.TextDocument, delay = 600): void {
-    if (!isPackageJson(doc)) return;
+    if (!isManifest(doc)) return;
     const key = doc.uri.toString();
     clearTimeout(timers.get(key));
     timers.set(
@@ -220,10 +336,11 @@ export function activate(context: vscode.ExtensionContext): void {
     const a = r.analysis!;
     const name = r.spec.registryName;
     const thr = formatThreshold(policy.thresholdMs);
+    void name;
     const lead =
       a.targetKind === "installed"
-        ? `Installed ${name}@${a.target}`
-        : `"${r.entry.spec}" resolves to ${name}@${a.target}, which`;
+        ? `Installed ${pkgAt(r, a.target)}`
+        : `${r.entry.spec ? `"${r.entry.spec}"` : `Unconstrained ${name}`} resolves to ${pkgAt(r, a.target)}, which`;
     const body = a.missingTime
       ? `${lead} has no publish time in the registry metadata, so its age cannot be verified (cooldown: ${thr}).`
       : `${lead} was published ${formatAge(a.targetAgeMs!)} ago and is still inside the cooldown of ${thr} (${formatAge(a.remainingMs!)} left; ${policy.origin}).`;
@@ -279,10 +396,27 @@ export function activate(context: vscode.ExtensionContext): void {
   function updateStatus(): void {
     const editor = vscode.window.activeTextEditor;
     const res = editor && results.get(editor.document.uri.toString());
-    if (!editor || !res || !cfg().get<boolean>("enabled", true)) {
+    if (!cfg().get<boolean>("enabled", true)) {
       status.hide();
       return;
     }
+    const ws = workspaceSummary;
+    const wsLine = ws
+      ? `Workspace (last "Check All Dependencies"): ${ws.tooYoung.length} too young in ${ws.files} manifest(s), ${ws.checked} checked`
+      : undefined;
+    if (!editor || !res) {
+      if (!ws) {
+        status.hide();
+        return;
+      }
+      status.text = `$(shield) workspace${ws.tooYoung.length ? ` $(warning) ${ws.tooYoung.length}` : " $(check)"}`;
+      status.tooltip = new vscode.MarkdownString(`**Cooldown Lens**\n\n${wsLine}\n\nClick to re-run the workspace check.`);
+      status.command = "cooldownLens.checkAll";
+      status.backgroundColor = ws.tooYoung.length ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
+      status.show();
+      return;
+    }
+    status.command = "cooldownLens.showPolicy";
     const warnings = res.results.filter(isWarning).length;
     const checked = res.results.filter((r) => r.analysis).length;
     const total = res.results.filter((r) => r.spec.kind !== "unsupported").length;
@@ -296,6 +430,7 @@ export function activate(context: vscode.ExtensionContext): void {
         `Source: ${res.policy.origin}`,
         `Registry: ${res.registry.base}`,
         `${checked}/${total} dependencies checked, ${warnings} inside cooldown`,
+        ...(wsLine ? [wsLine] : []),
         ...res.policy.notes.map((n) => `- ${n}`),
         ...res.registryNotes.map((n) => `- ${n}`),
       ].join("\n\n"),
@@ -316,7 +451,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // ------------------------------------------------------------------ providers
 
-  const selector: vscode.DocumentSelector = [{ scheme: "file", pattern: "**/package.json" }];
+  const selector: vscode.DocumentSelector = [
+    { scheme: "file", pattern: "**/package.json" },
+    { scheme: "file", pattern: "**/pyproject.toml" },
+    { scheme: "file", pattern: "**/*requirements*.{txt,in}" },
+    { scheme: "file", pattern: "**/*constraints*.{txt,in}" },
+    { scheme: "file", pattern: "**/requirements/*.{txt,in}" },
+  ];
 
   context.subscriptions.push(
     vscode.languages.registerHoverProvider(selector, {
@@ -360,7 +501,11 @@ export function activate(context: vscode.ExtensionContext): void {
         if (a.freshInRange) md.appendMarkdown(`${a.freshInRange} version(s) matching \`${r.entry.spec}\` are still inside the cooldown.\n\n`);
         md.appendMarkdown(`Cooldown: **${formatThreshold(res.policy.thresholdMs)}** — ${res.policy.origin}\n\n`);
         if (a.suggestion && (a.inCooldown || a.missingTime)) md.appendMarkdown("Quick fix available (Ctrl+. / Cmd+.).\n\n");
-        md.appendMarkdown(`Registry: ${r.registry}${r.fromCache ? " (cached)" : ""} · [npm](https://www.npmjs.com/package/${r.spec.registryName}?activeTab=versions)`);
+        const link =
+          r.ecosystem === "pypi"
+            ? `[PyPI](https://pypi.org/project/${encodeURIComponent(r.spec.registryName)}/#history)`
+            : `[npm](https://www.npmjs.com/package/${r.spec.registryName}?activeTab=versions)`;
+        md.appendMarkdown(`${r.ecosystem === "pypi" ? "Index" : "Registry"}: ${r.registry}${r.fromCache ? " (cached)" : ""} · ${link}`);
         return new vscode.Hover(md);
       },
     }),
@@ -376,6 +521,21 @@ export function activate(context: vscode.ExtensionContext): void {
             const a = hit?.r.analysis;
             if (!hit || !a?.suggestion) continue;
             const { entry, spec } = hit.r;
+            if (hit.r.ecosystem === "pypi" && hit.r.py) {
+              const py = hit.r.py;
+              const pinned = pythonPinSpec(py, a.suggestion);
+              const fix = new vscode.CodeAction(
+                `Pin ${entry.name} to ${pinned} (newest version${a.suggestionInRange ? " in range" : ""} past the cooldown)`,
+                vscode.CodeActionKind.QuickFix,
+              );
+              fix.diagnostics = [d];
+              fix.isPreferred = true;
+              fix.edit = new vscode.WorkspaceEdit();
+              if (py.specLength) fix.edit.replace(doc.uri, d.range, pinned);
+              else fix.edit.insert(doc.uri, doc.positionAt(py.nameOffset + py.nameLength), pinned);
+              actions.push(fix);
+              continue;
+            }
             // In range: a pin is the only edit that changes what a cooldown-unaware install picks.
             // Outside range: move the range to the safe version, keeping the operator.
             const newSpec = a.suggestionInRange
@@ -420,14 +580,15 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("cooldownLens.refresh", () => {
       const doc = vscode.window.activeTextEditor?.document;
-      if (doc && isPackageJson(doc)) void analyse(doc, true);
-      else for (const d of vscode.workspace.textDocuments) if (isPackageJson(d)) void analyse(d, true);
+      if (doc && isManifest(doc)) void analyse(doc, true);
+      else for (const d of vscode.workspace.textDocuments) if (isManifest(d)) void analyse(d, true);
     }),
     vscode.commands.registerCommand("cooldownLens.clearCache", async () => {
       await client.clear();
       vscode.window.showInformationMessage("Cooldown Lens: registry cache cleared.");
-      for (const d of vscode.workspace.textDocuments) if (isPackageJson(d)) void analyse(d, true);
+      for (const d of vscode.workspace.textDocuments) if (isManifest(d)) void analyse(d, true);
     }),
+    vscode.commands.registerCommand("cooldownLens.checkAll", () => checkAll()),
     vscode.commands.registerCommand("cooldownLens.toggle", () => {
       inlineEnabled = !inlineEnabled;
       for (const d of vscode.workspace.textDocuments) render(d);
@@ -436,7 +597,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const doc = vscode.window.activeTextEditor?.document;
       const res = doc && results.get(doc.uri.toString());
       if (!res) {
-        vscode.window.showInformationMessage("Cooldown Lens: open a package.json to see its cooldown policy.");
+        vscode.window.showInformationMessage("Cooldown Lens: open a package.json, requirements.txt or pyproject.toml to see its cooldown policy.");
         return;
       }
       const lines = [
@@ -457,11 +618,98 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  // ------------------------------------------------------------------ workspace check
+
+  async function checkAll(): Promise<WorkspaceSummary> {
+    const exclude = "**/{node_modules,.venv,venv,.tox,.nox,site-packages,.git,bower_components}/**";
+    const max = Math.max(1, cfg().get<number>("checkAll.maxFiles", 200));
+    const patterns = ["**/package.json", "**/pyproject.toml", "**/*requirements*.{txt,in}", "**/*constraints*.{txt,in}", "**/requirements/*.{txt,in}"];
+    const summary: WorkspaceSummary = { files: 0, checked: 0, tooYoung: [], errors: 0 };
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "Cooldown Lens: checking dependencies", cancellable: true },
+      async (progress, token) => {
+        const seen = new Map<string, vscode.Uri>();
+        for (const p of patterns) for (const u of await vscode.workspace.findFiles(p, exclude, max)) seen.set(u.toString(), u);
+        const uris = [...seen.values()]
+          .filter((u) => path.basename(u.fsPath) === "package.json" || isPythonManifestPath(u.fsPath))
+          .sort((a, b) => a.fsPath.localeCompare(b.fsPath))
+          .slice(0, max);
+        let i = 0;
+        for (const uri of uris) {
+          if (token.isCancellationRequested) break;
+          progress.report({ message: `${++i}/${uris.length} ${vscode.workspace.asRelativePath(uri)}`, increment: 100 / uris.length });
+          let doc: vscode.TextDocument;
+          try {
+            doc = await vscode.workspace.openTextDocument(uri);
+          } catch {
+            continue;
+          }
+          if (!isManifest(doc)) continue;
+          const key = doc.uri.toString();
+          clearTimeout(timers.get(key));
+          timers.delete(key);
+          await analyse(doc);
+          // A concurrent edit/open may have restarted the analysis; wait for whichever run is current.
+          for (let waited = 0; !results.get(key)?.done && waited < 60_000 && !token.isCancellationRequested; waited += 100) {
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          const res = results.get(key);
+          if (!res) continue;
+          summary.files++;
+          for (const r of res.results) {
+            if (r.analysis) summary.checked++;
+            if (r.error) summary.errors++;
+            if (isWarning(r))
+              summary.tooYoung.push({
+                uri: doc.uri,
+                file: vscode.workspace.asRelativePath(doc.uri),
+                ecosystem: r.ecosystem,
+                name: r.spec.registryName,
+                version: r.analysis!.target!,
+                ageMs: r.analysis!.targetAgeMs,
+                thresholdMs: res.policy.thresholdMs,
+                suggestion: r.analysis!.suggestion,
+                offset: r.entry.valueOffset,
+              });
+          }
+        }
+      },
+    );
+    workspaceSummary = summary;
+    updateStatus();
+    output.appendLine(`Check All Dependencies: ${summary.tooYoung.length} too young, ${summary.checked} checked in ${summary.files} manifest(s)${summary.errors ? `, ${summary.errors} registry error(s)` : ""}`);
+    for (const t of summary.tooYoung)
+      output.appendLine(`  ${t.file}: ${t.name} ${t.version} — ${t.ageMs !== undefined ? formatAge(t.ageMs) + " old" : "no publish time"}, cooldown ${formatThreshold(t.thresholdMs)}${t.suggestion ? `, safe: ${t.suggestion}` : ""}`);
+    if (!summary.tooYoung.length) {
+      void vscode.window.showInformationMessage(
+        `Cooldown Lens: all ${summary.checked} dependencies in ${summary.files} manifest(s) are older than their cooldown.`,
+      );
+    } else {
+      const items = summary.tooYoung.map((t) => ({
+        label: `$(warning) ${t.name} ${t.version}`,
+        description: `${t.ageMs !== undefined ? formatAge(t.ageMs) + " old" : "no publish time"} · cooldown ${formatThreshold(t.thresholdMs)}${t.suggestion ? ` · safe: ${t.suggestion}` : ""}`,
+        detail: `${t.file} (${t.ecosystem})`,
+        t,
+      }));
+      // Not awaited: the command resolves with the summary while the picker stays open.
+      void vscode.window
+        .showQuickPick(items, { title: `Cooldown Lens: ${summary.tooYoung.length} dependencies inside the cooldown`, matchOnDescription: true, matchOnDetail: true })
+        .then(async (pick) => {
+          if (!pick) return;
+          const editor = await vscode.window.showTextDocument(pick.t.uri);
+          const pos = editor.document.positionAt(pick.t.offset);
+          editor.selection = new vscode.Selection(pos, pos);
+          editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+        });
+    }
+    return summary;
+  }
+
   // ------------------------------------------------------------------ events
 
-  const watcher = vscode.workspace.createFileSystemWatcher(`**/{${WATCHED_FILES.join(",")}}`);
+  const watcher = vscode.workspace.createFileSystemWatcher(`**/{${[...WATCHED_FILES, ...PYTHON_WATCHED_FILES].join(",")}}`);
   const reanalyseAll = () => {
-    for (const d of vscode.workspace.textDocuments) if (isPackageJson(d)) schedule(d, 300);
+    for (const d of vscode.workspace.textDocuments) if (isManifest(d)) schedule(d, 300);
   };
   watcher.onDidChange(reanalyseAll);
   watcher.onDidCreate(reanalyseAll);

@@ -1,3 +1,5 @@
 {
-  "cooldownLens.registry": "http://127.0.0.1:48731/"
+  "cooldownLens.registry": "http://127.0.0.1:48731/",
+  "cooldownLens.python.index": "http://127.0.0.1:48731/",
+  "cooldownLens.python.minimumReleaseAgeDays": 5
 }

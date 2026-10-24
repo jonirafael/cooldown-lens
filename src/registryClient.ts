@@ -3,6 +3,10 @@ import * as path from "path";
 import { Limiter } from "./core/limiter";
 import type { PackageTimes } from "./core/versions";
 import { packumentUrl } from "./core/registryUrl";
+import { extractPypiTimes, normalizePyName, pypiJsonUrl } from "./core/python";
+
+/** Which registry protocol to speak: npm packuments or the PyPI JSON API. */
+export type Ecosystem = "npm" | "pypi";
 
 interface CacheEntry {
   fetchedAt: number;
@@ -17,6 +21,8 @@ export interface RegistryClientOptions {
   timeoutMs: () => number;
   concurrency: () => number;
   log: (msg: string) => void;
+  /** User-Agent header (defaults to the VS Code extension's). */
+  userAgent?: string;
 }
 
 export class RegistryError extends Error {
@@ -52,8 +58,8 @@ export class RegistryClient {
     return this.limiter.pending;
   }
 
-  private key(registry: string, name: string): string {
-    return `${registry}|${name}`;
+  private key(registry: string, name: string, ecosystem: Ecosystem): string {
+    return ecosystem === "npm" ? `${registry}|${name}` : `pypi|${registry}|${normalizePyName(name)}`;
   }
 
   private get cacheFile(): string | undefined {
@@ -94,9 +100,14 @@ export class RegistryClient {
   }
 
   /** Returns cached data when fresh (or when offline), otherwise fetches. */
-  async get(registry: string, name: string, force = false): Promise<{ data: PackageTimes; fromCache: boolean; fetchedAt: number }> {
+  async get(
+    registry: string,
+    name: string,
+    force = false,
+    ecosystem: Ecosystem = "npm",
+  ): Promise<{ data: PackageTimes; fromCache: boolean; fetchedAt: number }> {
     await this.load();
-    const key = this.key(registry, name);
+    const key = this.key(registry, name, ecosystem);
     const cached = this.memory.get(key);
     const offline = this.opts.offline();
     if (cached && (offline || (!force && Date.now() - cached.fetchedAt < this.opts.ttlMs()))) {
@@ -108,7 +119,7 @@ export class RegistryClient {
     let p = this.inflight.get(key);
     if (!p) {
       this.limiter.concurrency = this.opts.concurrency();
-      p = this.limiter.run(() => this.fetchPackument(registry, name)).finally(() => this.inflight.delete(key));
+      p = this.limiter.run(() => this.fetchPackument(registry, name, ecosystem)).finally(() => this.inflight.delete(key));
       this.inflight.set(key, p);
     }
     try {
@@ -127,14 +138,19 @@ export class RegistryClient {
     }
   }
 
-  private async fetchPackument(registry: string, name: string): Promise<PackageTimes> {
-    const url = packumentUrl(new URL(registry), name);
+  private async fetchPackument(registry: string, name: string, ecosystem: Ecosystem): Promise<PackageTimes> {
+    let url: string;
+    try {
+      url = ecosystem === "pypi" ? pypiJsonUrl(new URL(registry), name) : packumentUrl(new URL(registry), name);
+    } catch (e) {
+      throw new RegistryError((e as Error).message, "invalid");
+    }
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.opts.timeoutMs());
     this.requests++;
     try {
       const res = await fetch(url, {
-        headers: { accept: "application/json", "user-agent": "cooldown-lens-vscode" },
+        headers: { accept: "application/json", "user-agent": this.opts.userAgent ?? "cooldown-lens-vscode" },
         redirect: "follow",
         credentials: "omit",
         signal: ctrl.signal,
@@ -145,7 +161,15 @@ export class RegistryClient {
       if (len > MAX_BYTES) throw new RegistryError(`metadata for ${name} is too large (${len} bytes)`, "invalid");
       const text = await res.text();
       if (text.length > MAX_BYTES) throw new RegistryError(`metadata for ${name} is too large`, "invalid");
-      return extractTimes(JSON.parse(text));
+      const json = JSON.parse(text);
+      if (ecosystem === "pypi") {
+        try {
+          return extractPypiTimes(json);
+        } catch (e) {
+          throw new RegistryError(`${name}: ${(e as Error).message}`, "invalid");
+        }
+      }
+      return extractTimes(json);
     } catch (e) {
       if (e instanceof RegistryError) throw e;
       if (e instanceof SyntaxError) throw new RegistryError(`invalid JSON for ${name}`, "invalid");

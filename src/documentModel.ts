@@ -4,7 +4,8 @@ export const DEPENDENCY_SECTIONS = ["dependencies", "devDependencies", "peerDepe
 export type DependencySection = (typeof DEPENDENCY_SECTIONS)[number];
 
 export interface DependencyEntry {
-  section: DependencySection;
+  /** npm dependency section, or a Python section label such as "requirements". */
+  section: DependencySection | string;
   name: string;
   spec: string;
   keyOffset: number;
@@ -17,7 +18,7 @@ export interface DependencyEntry {
 }
 
 export interface SectionInfo {
-  section: DependencySection;
+  section: DependencySection | string;
   keyOffset: number;
 }
 

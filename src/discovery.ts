@@ -12,6 +12,8 @@ import {
   parseYarnrc,
 } from "./core/configParsers";
 import type { DiscoveredConfig } from "./core/policy";
+import type { ExcludeRule } from "./core/glob";
+import { normalizePyName, parsePyproject, parseUvExcludeNewer, parseUvToml } from "./core/python";
 
 export const WATCHED_FILES = [".npmrc", "pnpm-workspace.yaml", "bunfig.toml", ".yarnrc.yml", ...Object.keys(LOCKFILES)];
 
@@ -125,4 +127,72 @@ export async function findInstalledVersion(pkgDir: string, name: string, rootDir
     }
   }
   return undefined;
+}
+
+// ------------------------------------------------------------------------------ Python
+
+export interface PythonCooldownSetting {
+  thresholdMs: number;
+  origin: string;
+  file: string;
+}
+
+export interface PythonProjectContext {
+  setting?: PythonCooldownSetting;
+  /** Packages with `exclude-newer-package = { name = false }` (exempt from the cutoff). */
+  excludes: ExcludeRule[];
+  warnings: string[];
+}
+
+export const PYTHON_WATCHED_FILES = ["pyproject.toml", "uv.toml"];
+
+function uvSetting(value: unknown, file: string, label: string, now: number, warnings: string[]): PythonCooldownSetting | undefined {
+  const parsed = parseUvExcludeNewer(value, now);
+  if (!parsed) {
+    warnings.push(`${file}: ${label} "${String(value)}" is not a duration or timestamp uv understands`);
+    return undefined;
+  }
+  const shown = typeof value === "string" ? JSON.stringify(value) : String(value);
+  return {
+    thresholdMs: parsed.ms,
+    origin: `${label} = ${shown}${parsed.kind === "absolute" ? " (absolute cutoff)" : ""}`,
+    file,
+  };
+}
+
+function uvExcludes(pkgs: Record<string, unknown> | undefined, source: string): ExcludeRule[] {
+  if (!pkgs) return [];
+  return Object.entries(pkgs)
+    .filter(([, v]) => v === false)
+    .map(([name]) => ({ name: normalizePyName(name), versions: [], source }));
+}
+
+/**
+ * Reads uv's `exclude-newer` (dependency cooldown) from uv.toml and pyproject.toml `[tool.uv]`,
+ * walking up from `dir` to `rootDir`. The nearest file wins; uv.toml beats pyproject.toml in the
+ * same directory, like uv itself.
+ */
+export async function discoverPythonProject(dir: string, rootDir: string | undefined, now = Date.now()): Promise<PythonProjectContext> {
+  const ctx: PythonProjectContext = { excludes: [], warnings: [] };
+  for (const d of ancestorDirs(dir, rootDir)) {
+    const uvFile = path.join(d, "uv.toml");
+    const uvText = await readText(uvFile);
+    if (uvText !== undefined) {
+      const uv = parseUvToml(uvText);
+      if (uv.warning) ctx.warnings.push(`${uvFile}: ${uv.warning}`);
+      ctx.excludes.push(...uvExcludes(uv.excludeNewerPackage, "uv.toml exclude-newer-package"));
+      if (!ctx.setting && uv.excludeNewer !== undefined) ctx.setting = uvSetting(uv.excludeNewer, uvFile, "uv.toml exclude-newer", now, ctx.warnings);
+    }
+    const ppFile = path.join(d, "pyproject.toml");
+    const ppText = await readText(ppFile);
+    if (ppText !== undefined) {
+      const pp = parsePyproject(ppText);
+      ctx.excludes.push(...uvExcludes(pp.uvExcludeNewerPackage, "[tool.uv] exclude-newer-package"));
+      if (!ctx.setting && pp.uvExcludeNewer !== undefined) {
+        ctx.setting = uvSetting(pp.uvExcludeNewer, ppFile, "pyproject.toml [tool.uv] exclude-newer", now, ctx.warnings);
+      }
+    }
+    if (ctx.setting) break;
+  }
+  return ctx;
 }
