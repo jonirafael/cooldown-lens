@@ -1,5 +1,7 @@
 # Cooldown Lens — npm & PyPI package age and minimum release age for VS Code
 
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/jonirafael.cooldown-lens?label=VS%20Code%20Marketplace)](https://marketplace.visualstudio.com/items?itemName=jonirafael.cooldown-lens) [![Open VSX](https://img.shields.io/open-vsx/v/jonirafael/cooldown-lens?label=Open%20VSX)](https://open-vsx.org/extension/jonirafael/cooldown-lens) [![npm cooldown-check](https://img.shields.io/npm/v/cooldown-check?label=npm%20cooldown-check)](https://www.npmjs.com/package/cooldown-check)
+
 **See how old every dependency version in your `package.json`, `requirements.txt` or `pyproject.toml` is, and catch
 versions that are still inside your supply-chain cooldown before you install them.** Cooldown Lens reads the cooldown you
 already configured for npm (`min-release-age`), pnpm (`minimumReleaseAge`), Yarn (`npmMinimalAgeGate`), Bun
@@ -8,7 +10,7 @@ too fresh, and offers a one-click quick fix to the newest version that passes th
 
 **New in 0.2.0:** Python / PyPI support (pip requirements files, PEP 621 / PEP 735 / Poetry `pyproject.toml`, uv
 `exclude-newer`) and a **Cooldown Lens: Check All Dependencies** command that scans the whole workspace. Want the same
-check in CI? Use the companion CLI: [`npx cooldown-check`](cli/README.md).
+check in CI? Use the companion CLI on npm: [`npx cooldown-check`](https://www.npmjs.com/package/cooldown-check) ([docs](cli/README.md)).
 
 ![Cooldown Lens: inline package ages, cooldown warnings, hover and quick fix](images/demo.gif)
 
